@@ -1,0 +1,57 @@
+name: Sync upstream and notify
+
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    if: github.repository == 'adityabilawar/slop-detect-extension'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check for upstream changes
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          count=$(gh api 'repos/adityabilawar/slop-detect-extension/compare/main...voightkampfflabs:main' --jq .ahead_by)
+          echo "incoming=$count" >> "$GITHUB_OUTPUT"
+      - name: Email notification
+        if: steps.check.outputs.incoming != '0'
+        env:
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+          INCOMING: ${{ steps.check.outputs.incoming }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import smtplib
+          from email.message import EmailMessage
+
+          username = os.environ['SMTP_USERNAME']
+          password = os.environ['SMTP_PASSWORD']
+          if not username or not password:
+              raise SystemExit('Set the SMTP_USERNAME and SMTP_PASSWORD repository secrets before syncing.')
+          message = EmailMessage()
+          message['Subject'] = 'Slop Detect upstream main has new changes'
+          message['From'] = username
+          message['To'] = 'aditybilawar@gmail.com'
+          message.set_content(
+              f"The upstream main branch has {os.environ['INCOMING']} new commit(s). "
+              "The fork sync workflow will now attempt to merge them.\n\n"
+              "Check the workflow result at https://github.com/adityabilawar/slop-detect-extension/actions\n"
+              "Upstream: https://github.com/voightkampfflabs/slop-detect-extension\n"
+          )
+          with smtplib.SMTP_SSL('smtp.gmail.com', 465, timeout=30) as smtp:
+              smtp.login(username, password)
+              smtp.send_message(message)
+          PY
+      - name: Sync fork
+        if: steps.check.outputs.incoming != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api --method POST repos/adityabilawar/slop-detect-extension/merge-upstream -f branch=main
